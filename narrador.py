@@ -4,7 +4,13 @@ import tempfile
 import shutil
 import os
 import re
+import asyncio
 from pathlib import Path
+
+import numpy as np
+import librosa
+import soundfile as sf
+import edge_tts
 
 
 # ============================================================
@@ -20,7 +26,7 @@ st.set_page_config(
 
 
 # ============================================================
-# ESTILOS
+# ESTILO
 # ============================================================
 
 st.markdown(
@@ -35,21 +41,21 @@ st.markdown(
 
     .stApp {
         background:
-            radial-gradient(
-                circle at top,
-                #1a0d25 0%,
-                #09070d 42%,
-                #030204 100%
-            );
+        radial-gradient(
+            circle at top,
+            #1a0d25 0%,
+            #09070d 42%,
+            #030204 100%
+        );
     }
 
     h1 {
         text-align: center;
-        color: #ffffff !important;
+        color: white !important;
         font-family: Georgia, serif;
         font-size: 34px !important;
         letter-spacing: 4px;
-        margin-bottom: 0.2rem;
+        margin-bottom: 4px;
         text-shadow:
             0 0 8px #8f45d8,
             0 0 22px #4d087d;
@@ -87,17 +93,6 @@ st.markdown(
         border-radius: 12px !important;
     }
 
-    .stTextInput input {
-        min-height: 36px !important;
-        height: 36px !important;
-        font-size: 13px !important;
-    }
-
-    .stTextArea textarea {
-        font-size: 14px !important;
-        line-height: 1.55 !important;
-    }
-
     </style>
     """,
     unsafe_allow_html=True
@@ -108,32 +103,42 @@ st.markdown(
 # SESSION STATE
 # ============================================================
 
-if "resultado_wav" not in st.session_state:
-    st.session_state.resultado_wav = None
+if "efectos" not in st.session_state:
+    st.session_state.efectos = []
 
 if "resultado_mp3" not in st.session_state:
     st.session_state.resultado_mp3 = None
 
+if "resultado_wav" not in st.session_state:
+    st.session_state.resultado_wav = None
+
 if "error" not in st.session_state:
     st.session_state.error = None
 
-if "efectos" not in st.session_state:
-    st.session_state.efectos = []
+
+# ============================================================
+# BUSCAR FFMPEG
+# ============================================================
+
+def buscar_ffmpeg():
+
+    ffmpeg = shutil.which("ffmpeg")
+
+    if not ffmpeg:
+        return None
+
+    return ffmpeg
 
 
 # ============================================================
-# UTILIDADES
+# LIMPIAR TEXTO
 # ============================================================
-
-def buscar_programa(nombre):
-    return shutil.which(nombre)
-
 
 def limpiar_texto(texto):
 
     texto = texto.strip()
 
-    # Eliminar URLs
+    # URLs
     texto = re.sub(
         r"https?://\S+",
         "",
@@ -141,16 +146,12 @@ def limpiar_texto(texto):
         flags=re.IGNORECASE
     )
 
-    # Eliminar contenido entre corchetes
+    # Corchetes
     texto = re.sub(
         r"\[[^\]]*\]",
         "",
         texto
     )
-
-    # Guiones largos
-    texto = texto.replace("—", " ")
-    texto = texto.replace("–", " ")
 
     # Comillas
     texto = texto.replace('"', "")
@@ -159,22 +160,29 @@ def limpiar_texto(texto):
     texto = texto.replace("«", "")
     texto = texto.replace("»", "")
 
-    # Evitar demasiados saltos
-    texto = re.sub(
-        r"\n{3,}",
-        "\n\n",
-        texto
-    )
+    # Guiones largos
+    texto = texto.replace("—", " ")
+    texto = texto.replace("–", " ")
 
-    # Espacios
+    # Evitar espacios excesivos
     texto = re.sub(
         r"[ \t]+",
         " ",
         texto
     )
 
+    texto = re.sub(
+        r"\n{3,}",
+        "\n\n",
+        texto
+    )
+
     return texto.strip()
 
+
+# ============================================================
+# TIEMPO
+# ============================================================
 
 def convertir_tiempo(valor):
 
@@ -188,19 +196,19 @@ def convertir_tiempo(valor):
         partes = valor.split(":")
 
         if len(partes) == 1:
-            return float(partes[0])
+
+            return float(
+                partes[0]
+            )
 
         if len(partes) == 2:
 
-            minutos = int(partes[0])
-            segundos = int(partes[1])
+            minutos = int(
+                partes[0]
+            )
 
-            segundos = max(
-                0,
-                min(
-                    59,
-                    segundos
-                )
+            segundos = int(
+                partes[1]
             )
 
             return (
@@ -210,9 +218,17 @@ def convertir_tiempo(valor):
 
         if len(partes) == 3:
 
-            horas = int(partes[0])
-            minutos = int(partes[1])
-            segundos = int(partes[2])
+            horas = int(
+                partes[0]
+            )
+
+            minutos = int(
+                partes[1]
+            )
+
+            segundos = int(
+                partes[2]
+            )
 
             return (
                 horas * 3600
@@ -221,46 +237,224 @@ def convertir_tiempo(valor):
             )
 
     except Exception:
+
         return 0
 
     return 0
 
 
-def obtener_duracion(archivo):
+# ============================================================
+# GENERAR EDGE TTS
+# ============================================================
 
-    ffprobe = buscar_programa("ffprobe")
+async def _generar_edge_tts(
+    texto,
+    archivo_salida,
+    velocidad
+):
 
-    if not ffprobe:
-        return 0
+    # --------------------------------------------------------
+    # Convertimos la velocidad de 0.70 - 1.20
+    # a formato de Edge TTS.
+    # --------------------------------------------------------
 
-    try:
+    porcentaje = round(
+        (velocidad - 1.0) * 100
+    )
 
-        resultado = subprocess.run(
-            [
-                ffprobe,
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
-                archivo
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
+    if porcentaje >= 0:
+        rate = f"+{porcentaje}%"
+    else:
+        rate = f"{porcentaje}%"
+
+    # --------------------------------------------------------
+    # VOZ MASCULINA MEXICANA
+    # --------------------------------------------------------
+
+    communicate = edge_tts.Communicate(
+        texto,
+        "es-MX-JorgeNeural",
+        rate=rate,
+        volume="+0%"
+    )
+
+    await communicate.save(
+        archivo_salida
+    )
+
+
+def generar_edge_tts(
+    texto,
+    velocidad,
+    archivo_salida
+):
+
+    asyncio.run(
+        _generar_edge_tts(
+            texto,
+            archivo_salida,
+            velocidad
         )
-
-        return float(
-            resultado.stdout.strip()
-        )
-
-    except Exception:
-        return 0
+    )
 
 
 # ============================================================
-# GENERAR VOZ
+# CONVERTIR MP3 DE EDGE TTS A WAV
+# ============================================================
+
+def convertir_a_wav(
+    entrada,
+    salida,
+    ffmpeg
+):
+
+    comando = [
+        ffmpeg,
+        "-y",
+        "-loglevel",
+        "error",
+        "-i",
+        entrada,
+        "-ar",
+        "44100",
+        "-ac",
+        "1",
+        "-c:a",
+        "pcm_s16le",
+        salida
+    ]
+
+    resultado = subprocess.run(
+        comando,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=180
+    )
+
+    if resultado.returncode != 0:
+
+        raise RuntimeError(
+            resultado.stderr
+            or "FFmpeg no pudo convertir el audio."
+        )
+
+
+# ============================================================
+# CAMBIO DE TONO
+#
+# ESTA ES LA PARTE IMPORTANTE
+#
+# NO usamos:
+#
+#     asetrate
+#
+# NO usamos:
+#
+#     --pitch
+#
+# Librosa pitch_shift modifica el tono
+# conservando la duración.
+# ============================================================
+
+def cambiar_profundidad_voz(
+    archivo_entrada,
+    archivo_salida,
+    profundidad
+):
+
+    # --------------------------------------------------------
+    # 0% = 0 semitonos
+    #
+    # 100% = -8 semitonos
+    #
+    # Esto produce una voz bastante profunda
+    # sin convertirla en una voz acelerada.
+    # --------------------------------------------------------
+
+    profundidad = max(
+        0,
+        min(
+            100,
+            int(profundidad)
+        )
+    )
+
+    semitonos = -(
+        profundidad / 100.0
+    ) * 8.0
+
+    # --------------------------------------------------------
+    # Cargar audio
+    # --------------------------------------------------------
+
+    audio, sr = librosa.load(
+        archivo_entrada,
+        sr=44100,
+        mono=True
+    )
+
+    # --------------------------------------------------------
+    # 0% = NO procesamos.
+    #
+    # Esto conserva exactamente la voz original.
+    # --------------------------------------------------------
+
+    if profundidad == 0:
+
+        sf.write(
+            archivo_salida,
+            audio,
+            sr,
+            subtype="PCM_16"
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # CAMBIO DE TONO
+    #
+    # duration se mantiene.
+    # --------------------------------------------------------
+
+    audio_procesado = librosa.effects.pitch_shift(
+        audio,
+        sr=sr,
+        n_steps=semitonos,
+        bins_per_octave=12
+    )
+
+    # --------------------------------------------------------
+    # Normalización suave
+    # --------------------------------------------------------
+
+    maximo = np.max(
+        np.abs(
+            audio_procesado
+        )
+    )
+
+    if maximo > 0.98:
+
+        audio_procesado = (
+            audio_procesado
+            * (0.98 / maximo)
+        )
+
+    # --------------------------------------------------------
+    # Guardar
+    # --------------------------------------------------------
+
+    sf.write(
+        archivo_salida,
+        audio_procesado,
+        sr,
+        subtype="PCM_16"
+    )
+
+
+# ============================================================
+# PROCESAR VOZ
 # ============================================================
 
 def generar_voz(
@@ -270,332 +464,168 @@ def generar_voz(
     reverb
 ):
 
-    edge_tts = buscar_programa("edge-tts")
-    ffmpeg = buscar_programa("ffmpeg")
-
-    if not edge_tts:
-        return (
-            None,
-            "No se encontró edge-tts."
-        )
+    ffmpeg = buscar_ffmpeg()
 
     if not ffmpeg:
+
         return (
             None,
             "No se encontró FFmpeg."
         )
 
-    texto = limpiar_texto(texto)
+    texto = limpiar_texto(
+        texto
+    )
 
     if not texto:
+
         return (
             None,
             "El texto está vacío."
         )
 
     carpeta = tempfile.mkdtemp(
-        prefix="narrador_tts_"
-    )
-
-    original = os.path.join(
-        carpeta,
-        "voz_original.mp3"
-    )
-
-    procesada = os.path.join(
-        carpeta,
-        "voz_procesada.wav"
+        prefix="narrador_"
     )
 
     try:
 
-        # ====================================================
-        # VELOCIDAD
-        # ====================================================
-
-        porcentaje = int(
-            (velocidad - 1.0) * 100
+        edge_mp3 = os.path.join(
+            carpeta,
+            "edge.mp3"
         )
 
-        if porcentaje >= 0:
-            rate = f"+{porcentaje}%"
-        else:
-            rate = f"{porcentaje}%"
+        original_wav = os.path.join(
+            carpeta,
+            "original.wav"
+        )
+
+        voz_wav = os.path.join(
+            carpeta,
+            "voz.wav"
+        )
 
         # ====================================================
         # EDGE TTS
-        #
-        # NO usamos --pitch.
-        #
-        # El pitch se procesa posteriormente.
         # ====================================================
 
-        comando_tts = [
-            edge_tts,
-            "--voice",
-            "es-MX-JorgeNeural",
-            "--rate",
-            rate,
-            "--volume",
-            "+0%",
-            "--text",
+        generar_edge_tts(
             texto,
-            "--write-media",
-            original
-        ]
-
-        resultado = subprocess.run(
-            comando_tts,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=180
+            velocidad,
+            edge_mp3
         )
 
-        if resultado.returncode != 0:
-
-            return (
-                None,
-                "Edge TTS no pudo generar "
-                "la voz:\n\n"
-                + (
-                    resultado.stderr
-                    or resultado.stdout
-                    or "Sin información."
-                )
-            )
-
         if (
-            not os.path.exists(original)
-            or os.path.getsize(original) < 1000
+            not os.path.exists(edge_mp3)
+            or os.path.getsize(edge_mp3) < 1000
         ):
 
-            return (
-                None,
+            raise RuntimeError(
                 "Edge TTS no generó un audio válido."
             )
 
         # ====================================================
-        # PROFUNDIDAD
-        #
-        # 0%   = original
-        # 25%  = ligeramente grave
-        # 50%  = grave
-        # 75%  = muy grave
-        # 100% = máximo
-        #
-        # IMPORTANTE:
-        # El slider va de izquierda a derecha:
-        #
-        # 0 ------------------------------ 100
-        # normal                         grave
+        # MP3 -> WAV
         # ====================================================
 
-        profundidad = max(
-            0,
-            min(
-                100,
-                int(profundidad)
-            )
-        )
-
-        # Factor de tono.
-        #
-        # 0%   -> 1.00
-        # 100% -> 0.70
-        #
-        # Cuanto menor el factor,
-        # más grave.
-
-        factor_pitch = (
-            1.0
-            - (
-                profundidad / 100.0
-            ) * 0.30
+        convertir_a_wav(
+            edge_mp3,
+            original_wav,
+            ffmpeg
         )
 
         # ====================================================
-        # FILTROS
+        # CAMBIO DE TONO
         # ====================================================
 
-        filtros = []
+        cambiar_profundidad_voz(
+            original_wav,
+            voz_wav,
+            profundidad
+        )
 
-        # ----------------------------------------------------
-        # TONO
-        # ----------------------------------------------------
-        #
-        # IMPORTANTE:
-        #
-        # No utilizamos --pitch de Edge TTS.
-        #
-        # Esto evita el error:
-        #
-        # Invalid pitch '0Hz'
-        #
-        # y permite tener el control desde 0 a 100%.
-        #
         # ====================================================
-
-        filtros.append(
-            f"asetrate="
-            f"44100*{factor_pitch:.4f},"
-            f"aresample=44100"
-        )
-
-        # ----------------------------------------------------
-        # COMPRESOR
-        # ----------------------------------------------------
-
-        filtros.append(
-            "acompressor="
-            "threshold=-18dB:"
-            "ratio=2.5:"
-            "attack=15:"
-            "release=120"
-        )
-
-        # ----------------------------------------------------
-        # EQ GRAVE
-        # ----------------------------------------------------
-
-        if profundidad > 0:
-
-            ganancia_grave = (
-                profundidad * 0.04
-            )
-
-            filtros.append(
-                "equalizer="
-                "f=120:"
-                "t=q:"
-                "w=1.0:"
-                f"g={ganancia_grave:.2f}"
-            )
-
-        # ----------------------------------------------------
-        # PRESENCIA
-        # ----------------------------------------------------
-
-        filtros.append(
-            "equalizer="
-            "f=3000:"
-            "t=q:"
-            "w=1.2:"
-            "g=1"
-        )
-
-        # ----------------------------------------------------
         # REVERB
-        # ----------------------------------------------------
+        # ====================================================
 
         if reverb > 0:
 
+            voz_reverb = os.path.join(
+                carpeta,
+                "voz_reverb.wav"
+            )
+
             cantidad = (
-                float(reverb)
-                / 100.0
+                reverb / 100.0
             )
 
             delay1 = int(
-                45 + cantidad * 35
+                45 + cantidad * 30
             )
 
             delay2 = int(
-                90 + cantidad * 50
+                90 + cantidad * 45
             )
 
-            delay3 = int(
-                150 + cantidad * 70
+            decay1 = (
+                0.10
+                * cantidad
             )
 
-            echo1 = 0.10 * cantidad
-            echo2 = 0.07 * cantidad
-            echo3 = 0.04 * cantidad
-
-            filtros.append(
-                f"aecho="
-                f"0.85:0.65:"
-                f"{delay1}|"
-                f"{delay2}|"
-                f"{delay3}:"
-                f"{echo1:.3f}|"
-                f"{echo2:.3f}|"
-                f"{echo3:.3f}"
+            decay2 = (
+                0.07
+                * cantidad
             )
 
-        # ----------------------------------------------------
-        # LIMITADOR
-        # ----------------------------------------------------
+            filtro = (
+                "aecho="
+                "0.85:0.65:"
+                f"{delay1}|{delay2}:"
+                f"{decay1:.3f}|"
+                f"{decay2:.3f}"
+            )
 
-        filtros.append(
-            "alimiter="
-            "limit=0.90"
-        )
+            comando = [
+                ffmpeg,
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                voz_wav,
+                "-af",
+                filtro,
+                "-ar",
+                "44100",
+                "-ac",
+                "1",
+                "-c:a",
+                "pcm_s16le",
+                voz_reverb
+            ]
 
-        filtro_final = ",".join(
-            filtros
-        )
+            resultado = subprocess.run(
+                comando,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=180
+            )
 
-        # ====================================================
-        # PROCESAMIENTO
-        # ====================================================
+            if resultado.returncode != 0:
 
-        comando_ffmpeg = [
-            ffmpeg,
-            "-y",
-            "-loglevel",
-            "error",
-
-            "-i",
-            original,
-
-            "-af",
-            filtro_final,
-
-            "-ar",
-            "44100",
-
-            "-ac",
-            "1",
-
-            "-c:a",
-            "pcm_s16le",
-
-            procesada
-        ]
-
-        resultado = subprocess.run(
-            comando_ffmpeg,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=180
-        )
-
-        if resultado.returncode != 0:
-
-            return (
-                None,
-                "FFmpeg no pudo procesar "
-                "la voz:\n\n"
-                + (
+                raise RuntimeError(
                     resultado.stderr
-                    or "Sin información."
+                    or "Error aplicando reverb."
                 )
-            )
 
-        if (
-            not os.path.exists(procesada)
-            or os.path.getsize(procesada) < 1000
-        ):
+            voz_wav = voz_reverb
 
-            return (
-                None,
-                "FFmpeg no generó "
-                "un WAV válido."
-            )
+        # ====================================================
+        # LEER RESULTADO
+        # ====================================================
 
         with open(
-            procesada,
+            voz_wav,
             "rb"
         ) as archivo:
 
@@ -604,14 +634,6 @@ def generar_voz(
         return (
             audio,
             None
-        )
-
-    except subprocess.TimeoutExpired:
-
-        return (
-            None,
-            "La generación de voz "
-            "tardó demasiado."
         )
 
     except Exception as error:
@@ -630,7 +652,59 @@ def generar_voz(
 
 
 # ============================================================
-# MEZCLAR AUDIO
+# DURACIÓN
+# ============================================================
+
+def obtener_duracion(
+    archivo,
+    ffmpeg
+):
+
+    comando = [
+        ffmpeg,
+        "-i",
+        archivo
+    ]
+
+    resultado = subprocess.run(
+        comando,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+
+    texto = resultado.stderr
+
+    encontrado = re.search(
+        r"Duration:\s*(\d+):(\d+):(\d+)\.(\d+)",
+        texto
+    )
+
+    if not encontrado:
+
+        return 0
+
+    horas = int(
+        encontrado.group(1)
+    )
+
+    minutos = int(
+        encontrado.group(2)
+    )
+
+    segundos = int(
+        encontrado.group(3)
+    )
+
+    return (
+        horas * 3600
+        + minutos * 60
+        + segundos
+    )
+
+
+# ============================================================
+# MEZCLAR TODO
 # ============================================================
 
 def mezclar_audio(
@@ -640,9 +714,7 @@ def mezclar_audio(
     efectos
 ):
 
-    ffmpeg = buscar_programa(
-        "ffmpeg"
-    )
+    ffmpeg = buscar_ffmpeg()
 
     if not ffmpeg:
 
@@ -653,13 +725,13 @@ def mezclar_audio(
         )
 
     carpeta = tempfile.mkdtemp(
-        prefix="narrador_mix_"
+        prefix="mezcla_"
     )
 
     try:
 
         # ====================================================
-        # VOZ
+        # GUARDAR VOZ
         # ====================================================
 
         voz_path = os.path.join(
@@ -677,17 +749,20 @@ def mezclar_audio(
             )
 
         duracion = obtener_duracion(
-            voz_path
+            voz_path,
+            ffmpeg
         )
 
         if duracion <= 0:
 
-            return (
-                None,
-                None,
+            raise RuntimeError(
                 "No se pudo determinar "
                 "la duración de la narración."
             )
+
+        # ====================================================
+        # INPUTS
+        # ====================================================
 
         inputs = [
             "-i",
@@ -697,7 +772,7 @@ def mezclar_audio(
         filtros = []
 
         # ====================================================
-        # VOZ PRINCIPAL
+        # VOZ
         # ====================================================
 
         filtros.append(
@@ -708,13 +783,15 @@ def mezclar_audio(
 
         siguiente = 1
 
+        entradas_mix = [
+            "[voz]"
+        ]
+
         # ====================================================
         # AMBIENTE
         # ====================================================
 
-        ambiente_activo = False
-
-        if ambiente is not None:
+        if ambiente:
 
             extension = (
                 Path(
@@ -725,8 +802,7 @@ def mezclar_audio(
 
             ambiente_path = os.path.join(
                 carpeta,
-                "ambiente"
-                + extension
+                "ambiente" + extension
             )
 
             with open(
@@ -749,29 +825,31 @@ def mezclar_audio(
 
             filtros.append(
                 f"[{siguiente}:a]"
-                f"volume="
-                f"{volumen_ambiente:.3f},"
-                f"atrim="
-                f"duration={duracion},"
+                f"volume={volumen_ambiente:.3f},"
+                f"atrim=duration={duracion},"
                 "asetpts=PTS-STARTPTS"
+                "[ambiente]"
+            )
+
+            entradas_mix.append(
                 "[ambiente]"
             )
 
             siguiente += 1
 
-            ambiente_activo = True
-
         # ====================================================
         # EFECTOS
         # ====================================================
-
-        etiquetas_efectos = []
 
         for numero, efecto in enumerate(
             efectos
         ):
 
             archivo = efecto["archivo"]
+
+            if not archivo:
+                continue
+
             tiempo = efecto["tiempo"]
             volumen = efecto["volumen"]
 
@@ -797,6 +875,14 @@ def mezclar_audio(
                     archivo.getvalue()
                 )
 
+            milisegundos = int(
+                tiempo * 1000
+            )
+
+            etiqueta = (
+                f"fx{numero}"
+            )
+
             inputs.extend(
                 [
                     "-i",
@@ -804,24 +890,15 @@ def mezclar_audio(
                 ]
             )
 
-            etiqueta = (
-                f"fx{numero}"
-            )
-
-            milisegundos = int(
-                tiempo * 1000
-            )
-
             filtros.append(
                 f"[{siguiente}:a]"
                 f"adelay="
                 f"{milisegundos}:all=1,"
-                f"volume="
-                f"{volumen:.3f}"
+                f"volume={volumen:.3f}"
                 f"[{etiqueta}]"
             )
 
-            etiquetas_efectos.append(
+            entradas_mix.append(
                 f"[{etiqueta}]"
             )
 
@@ -831,26 +908,14 @@ def mezclar_audio(
         # MEZCLA
         # ====================================================
 
-        entradas = [
-            "[voz]"
-        ]
-
-        if ambiente_activo:
-
-            entradas.append(
-                "[ambiente]"
-            )
-
-        entradas.extend(
-            etiquetas_efectos
-        )
-
         cantidad = len(
-            entradas
+            entradas_mix
         )
 
         filtros.append(
-            "".join(entradas)
+            "".join(
+                entradas_mix
+            )
             + f"amix="
             f"inputs={cantidad}:"
             "duration=first:"
@@ -909,14 +974,9 @@ def mezclar_audio(
 
         if resultado.returncode != 0:
 
-            return (
-                None,
-                None,
-                "Error creando WAV:\n\n"
-                + (
-                    resultado.stderr
-                    or "Sin información."
-                )
+            raise RuntimeError(
+                resultado.stderr
+                or "No se pudo crear el WAV."
             )
 
         # ====================================================
@@ -952,14 +1012,9 @@ def mezclar_audio(
 
         if resultado.returncode != 0:
 
-            return (
-                None,
-                None,
-                "Error creando MP3:\n\n"
-                + (
-                    resultado.stderr
-                    or "Sin información."
-                )
+            raise RuntimeError(
+                resultado.stderr
+                or "No se pudo crear el MP3."
             )
 
         with open(
@@ -999,7 +1054,7 @@ def mezclar_audio(
 
 
 # ============================================================
-# EFECTOS DINÁMICOS
+# AGREGAR EFECTO
 # ============================================================
 
 def agregar_efecto():
@@ -1019,22 +1074,8 @@ def agregar_efecto():
     )
 
 
-def eliminar_efecto(indice):
-
-    if (
-        0 <= indice
-        < len(
-            st.session_state.efectos
-        )
-    ):
-
-        st.session_state.efectos.pop(
-            indice
-        )
-
-
 # ============================================================
-# ENCABEZADO
+# INTERFAZ
 # ============================================================
 
 st.markdown(
@@ -1068,7 +1109,7 @@ st.markdown(
 
 texto = st.text_area(
     "Texto",
-    height=240,
+    height=230,
     placeholder=(
         "Escribe aquí la historia "
         "que quieres convertir en narración..."
@@ -1078,7 +1119,7 @@ texto = st.text_area(
 
 
 # ============================================================
-# CONTROLES DE VOZ
+# VOZ
 # ============================================================
 
 st.markdown(
@@ -1086,9 +1127,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-col1, col2, col3 = st.columns(
-    [1, 1, 1]
-)
+col1, col2, col3 = st.columns(3)
 
 with col1:
 
@@ -1117,18 +1156,17 @@ with col3:
         "🌫️ Reverb",
         min_value=0,
         max_value=100,
-        value=18,
+        value=15,
         step=1,
         format="%d%%"
     )
-
 
 st.markdown(
     f"""
     <div class="info">
         Velocidad: {velocidad:.2f}x
         &nbsp;&nbsp;|&nbsp;&nbsp;
-        Voz gruesa: {profundidad}%
+        Profundidad: {profundidad}%
         &nbsp;&nbsp;|&nbsp;&nbsp;
         Reverb: {reverb}%
     </div>
@@ -1155,7 +1193,6 @@ ambiente = st.file_uploader(
         "ogg",
         "flac"
     ],
-    key="ambiente",
     label_visibility="collapsed"
 )
 
@@ -1168,16 +1205,13 @@ volumen_ambiente = st.slider(
     format="%d%%"
 )
 
-volumen_ambiente_ffmpeg = (
-    volumen_ambiente / 100.0
-)
-
 st.markdown(
     f"""
     <div class="info">
-        Volumen ambiente: {volumen_ambiente}%
+        Volumen: {volumen_ambiente}%
         &nbsp;&nbsp;•&nbsp;&nbsp;
-        🔁 Loop automático
+        🔁 El ambiente se repite automáticamente
+        hasta terminar la narración.
     </div>
     """,
     unsafe_allow_html=True
@@ -1199,55 +1233,17 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-col1, col2 = st.columns(
-    [1, 5]
-)
+if st.button(
+    "＋ Agregar efecto"
+):
 
-with col1:
+    agregar_efecto()
 
-    if st.button(
-        "＋ Efecto",
-        use_container_width=True
-    ):
-
-        agregar_efecto()
-
-        st.rerun()
-
-with col2:
-
-    cantidad_efectos = len(
-        st.session_state.efectos
-    )
-
-    if cantidad_efectos:
-
-        st.markdown(
-            f"""
-            <div class="info">
-                {cantidad_efectos}
-                efecto(s) agregado(s)
-                • máximo 10
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    else:
-
-        st.markdown(
-            """
-            <div class="info">
-                Agrega efectos solamente cuando
-                los necesites.
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+    st.rerun()
 
 
 # ============================================================
-# BLOQUES DE EFECTOS
+# LISTA DE EFECTOS
 # ============================================================
 
 for indice, efecto in enumerate(
@@ -1259,13 +1255,13 @@ for indice, efecto in enumerate(
     ):
 
         col1, col2, col3, col4 = st.columns(
-            [3, 1.2, 1.2, 0.8]
+            [3, 1.2, 1.2, 0.7]
         )
 
         with col1:
 
             archivo = st.file_uploader(
-                "🔊 Archivo",
+                "🔊 Sonido",
                 type=[
                     "mp3",
                     "wav",
@@ -1273,25 +1269,23 @@ for indice, efecto in enumerate(
                     "ogg",
                     "flac"
                 ],
-                key=f"archivo_{indice}"
+                key=f"efecto_archivo_{indice}"
             )
 
             efecto["archivo"] = archivo
 
         with col2:
 
-            tiempo = st.text_input(
+            efecto["tiempo"] = st.text_input(
                 "⏱️ Tiempo",
                 value=efecto["tiempo"],
                 placeholder="01:54",
-                key=f"tiempo_{indice}"
+                key=f"efecto_tiempo_{indice}"
             )
-
-            efecto["tiempo"] = tiempo
 
         with col3:
 
-            volumen = st.slider(
+            efecto["volumen"] = st.slider(
                 "🔊 Volumen",
                 min_value=0.0,
                 max_value=1.5,
@@ -1299,10 +1293,8 @@ for indice, efecto in enumerate(
                     efecto["volumen"]
                 ),
                 step=0.05,
-                key=f"volumen_{indice}"
+                key=f"efecto_volumen_{indice}"
             )
-
-            efecto["volumen"] = volumen
 
         with col4:
 
@@ -1313,11 +1305,10 @@ for indice, efecto in enumerate(
 
             if st.button(
                 "🗑️",
-                key=f"eliminar_{indice}",
-                help="Eliminar efecto"
+                key=f"borrar_efecto_{indice}"
             ):
 
-                eliminar_efecto(
+                st.session_state.efectos.pop(
                     indice
                 )
 
@@ -1331,7 +1322,7 @@ for indice, efecto in enumerate(
 
 
 # ============================================================
-# GENERAR NARRACIÓN
+# GENERAR
 # ============================================================
 
 st.markdown("---")
@@ -1345,8 +1336,8 @@ generar = st.button(
 
 if generar:
 
-    st.session_state.resultado_wav = None
     st.session_state.resultado_mp3 = None
+    st.session_state.resultado_wav = None
     st.session_state.error = None
 
     if not texto.strip():
@@ -1385,7 +1376,7 @@ if generar:
         # ====================================================
 
         with st.spinner(
-            "🎙️ Generando narración..."
+            "🎙️ Generando voz..."
         ):
 
             voz, error = generar_voz(
@@ -1406,14 +1397,14 @@ if generar:
             # =================================================
 
             with st.spinner(
-                "🎚️ Mezclando voz, ambiente y efectos..."
+                "🎚️ Mezclando narración..."
             ):
 
                 wav, mp3, error = mezclar_audio(
                     voz_bytes=voz,
                     ambiente=ambiente,
                     volumen_ambiente=(
-                        volumen_ambiente_ffmpeg
+                        volumen_ambiente / 100
                     ),
                     efectos=efectos_validos
                 )
@@ -1456,9 +1447,7 @@ if st.session_state.resultado_mp3:
         format="audio/mpeg"
     )
 
-    col1, col2 = st.columns(
-        [1, 1]
-    )
+    col1, col2 = st.columns(2)
 
     with col1:
 
