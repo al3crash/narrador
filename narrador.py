@@ -52,7 +52,8 @@ st.markdown(
             0 0 30px #4d087d;
     }
 
-    h2, h3 {
+    h2,
+    h3 {
         color: #b978ff !important;
     }
 
@@ -100,7 +101,7 @@ def limpiar_texto(texto):
 
     texto = texto.strip()
 
-    # Eliminar URLs
+    # URLs
     texto = re.sub(
         r"https?://\S+",
         "",
@@ -108,7 +109,7 @@ def limpiar_texto(texto):
         flags=re.IGNORECASE
     )
 
-    # Eliminar etiquetas entre corchetes
+    # Texto entre corchetes
     texto = re.sub(
         r"\[[^\]]*\]",
         "",
@@ -125,6 +126,10 @@ def limpiar_texto(texto):
     texto = texto.replace("”", "")
     texto = texto.replace("«", "")
     texto = texto.replace("»", "")
+
+    # Evitar que lea ciertas expresiones
+    texto = texto.replace("...", ".")
+    texto = texto.replace("…", ".")
 
     # Espacios repetidos
     texto = re.sub(
@@ -146,9 +151,9 @@ def limpiar_texto(texto):
 def convertir_tiempo(valor):
     """
     Convierte:
-    1:54
-    01:54
-    00:01:54
+        1:54
+        01:54
+        00:01:54
 
     en segundos.
     """
@@ -231,7 +236,6 @@ def obtener_duracion(archivo):
 
 # ============================================================
 # GENERACIÓN DE VOZ
-# BASADA EN EL PROYECTO HASTAAQUI LLEGASTE
 # ============================================================
 
 def generar_voz(
@@ -297,15 +301,18 @@ def generar_voz(
         )
 
         if porcentaje >= 0:
+
             rate = f"+{porcentaje}%"
+
         else:
+
             rate = f"{porcentaje}%"
 
         # ====================================================
         # EDGE TTS
         #
-        # IMPORTANTE:
-        # Edge TTS exige +0Hz y NO 0Hz.
+        # Pitch neutro.
+        # La profundidad se procesa posteriormente.
         # ====================================================
 
         comando_tts = [
@@ -369,16 +376,17 @@ def generar_voz(
         #
         # 1.00 = normal
         # 0.95 = ligeramente grave
-        # 0.90 = grave
-        # 0.82 = muy grave
-        # 0.70 = extremadamente grave
+        # 0.92 = grave
+        # 0.90 = bastante grave
+        # 0.87 = muy grave
+        # 0.85 = límite recomendado
         #
-        # atempo compensa la duración.
+        # Se mantiene separada de velocidad.
         # ====================================================
 
-        factor = profundidad
-
-        atempo = 1.0 / factor
+        factor = float(
+            profundidad
+        )
 
         # ====================================================
         # REVERB
@@ -418,16 +426,52 @@ def generar_voz(
             )
 
         # ====================================================
+        # PROCESAMIENTO DE PROFUNDIDAD
+        #
+        # IMPORTANTE:
+        #
+        # asetrate modifica el tono.
+        # atempo compensa la duración.
+        #
+        # La velocidad de narración ya fue establecida
+        # anteriormente por Edge TTS.
+        # ====================================================
+
+        if factor >= 0.99:
+
+            filtro_pitch = (
+                "aresample=44100"
+            )
+
+        else:
+
+            atempo_compensacion = (
+                1.0 / factor
+            )
+
+            filtro_pitch = (
+                f"asetrate="
+                f"44100*{factor:.4f},"
+                "aresample=44100,"
+                f"atempo={atempo_compensacion:.6f}"
+            )
+
+        # ====================================================
         # FILTRO FINAL
         # ====================================================
 
         filtro = (
-            f"asetrate=44100*{factor:.4f},"
-            "aresample=44100,"
-            f"atempo={atempo:.6f},"
-            "lowpass=f=520"
-            f"{filtro_reverb},"
-            "alimiter=limit=0.88"
+            filtro_pitch
+            + ","
+            "lowpass=f=650"
+            + filtro_reverb
+            + ","
+            "acompressor="
+            "threshold=-18dB:"
+            "ratio=2.5:"
+            "attack=20:"
+            "release=120,"
+            "alimiter=limit=0.90"
         )
 
         # ====================================================
@@ -448,11 +492,11 @@ def generar_voz(
             "-af",
             filtro,
 
-            "-ac",
-            "1",
-
             "-ar",
             "44100",
+
+            "-ac",
+            "1",
 
             "-c:a",
             "pcm_s16le",
@@ -527,7 +571,7 @@ def generar_voz(
 
 
 # ============================================================
-# MEZCLA DE NARRACIÓN + AMBIENTE + EFECTOS
+# MEZCLAR NARRACIÓN + AMBIENTE + EFECTOS
 # ============================================================
 
 def mezclar_audio(
@@ -592,9 +636,14 @@ def mezclar_audio(
 
         filtros = []
 
-        # Voz
+        # ====================================================
+        # VOZ
+        # ====================================================
+
         filtros.append(
-            "[0:a]volume=1.0[voz]"
+            "[0:a]"
+            "volume=1.0"
+            "[voz]"
         )
 
         siguiente = 1
@@ -614,7 +663,8 @@ def mezclar_audio(
 
             ambiente_path = os.path.join(
                 carpeta,
-                "ambiente" + extension
+                "ambiente"
+                + extension
             )
 
             with open(
@@ -674,7 +724,8 @@ def mezclar_audio(
 
             efecto_path = os.path.join(
                 carpeta,
-                f"efecto_{numero}{extension}"
+                f"efecto_{numero}"
+                + extension
             )
 
             with open(
@@ -748,7 +799,7 @@ def mezclar_audio(
         )
 
         # ====================================================
-        # WAV
+        # WAV FINAL
         # ====================================================
 
         wav_final = os.path.join(
@@ -802,11 +853,14 @@ def mezclar_audio(
                 None,
                 None,
                 "Error creando WAV:\n\n"
-                + resultado.stderr
+                + (
+                    resultado.stderr
+                    or "Sin información."
+                )
             )
 
         # ====================================================
-        # MP3
+        # MP3 FINAL
         # ====================================================
 
         mp3_final = os.path.join(
@@ -848,7 +902,10 @@ def mezclar_audio(
                 None,
                 None,
                 "Error creando MP3:\n\n"
-                + resultado.stderr
+                + (
+                    resultado.stderr
+                    or "Sin información."
+                )
             )
 
         with open(
@@ -892,12 +949,17 @@ def mezclar_audio(
 # ============================================================
 
 if "resultado_wav" not in st.session_state:
+
     st.session_state.resultado_wav = None
 
+
 if "resultado_mp3" not in st.session_state:
+
     st.session_state.resultado_mp3 = None
 
+
 if "error" not in st.session_state:
+
     st.session_state.error = None
 
 
@@ -905,7 +967,9 @@ if "error" not in st.session_state:
 # ENCABEZADO
 # ============================================================
 
-st.markdown("# 🎙️ NARRADOR")
+st.markdown(
+    "# 🎙️ NARRADOR"
+)
 
 st.markdown(
     """
@@ -935,9 +999,7 @@ texto = st.text_area(
     "Texto:",
     height=320,
     placeholder=(
-        "Escribe aquí tu historia...\n\n"
-        "De repente se escucharon unas risas "
-        "provenientes del pasillo..."
+        "Escribe aquí tu historia..."
     ),
 )
 
@@ -973,20 +1035,23 @@ with col1:
         )
     )
 
+
 with col2:
 
     profundidad = st.slider(
         "🐺 Voz gruesa",
-        min_value=0.70,
+        min_value=0.85,
         max_value=1.00,
-        value=0.82,
+        value=0.92,
         step=0.01,
         help=(
             "1.00 = normal | "
-            "0.82 = grave | "
-            "0.70 = muy grave"
+            "0.95 = ligeramente grave | "
+            "0.90 = grave | "
+            "0.85 = muy grave"
         )
     )
+
 
 reverb = st.slider(
     "🌫️ Reverberación",
@@ -1000,9 +1065,9 @@ reverb = st.slider(
 st.markdown(
     f"""
     <div class="info">
-    Velocidad: {velocidad:.2f}x<br>
-    Profundidad: {profundidad:.2f}<br>
-    Reverb: {reverb}%
+        Velocidad: {velocidad:.2f}x<br>
+        Profundidad: {profundidad:.2f}<br>
+        Reverb: {reverb}%
     </div>
     """,
     unsafe_allow_html=True
@@ -1060,6 +1125,7 @@ cantidad_efectos = st.number_input(
 )
 
 efectos = []
+
 
 for i in range(
     int(cantidad_efectos)
@@ -1121,7 +1187,7 @@ for i in range(
 
 
 # ============================================================
-# BOTÓN
+# GENERAR
 # ============================================================
 
 st.markdown("---")
@@ -1132,10 +1198,6 @@ generar = st.button(
     use_container_width=True,
 )
 
-
-# ============================================================
-# GENERAR
-# ============================================================
 
 if generar:
 
