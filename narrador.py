@@ -20,7 +20,7 @@ st.set_page_config(
 
 
 # ============================================================
-# ESTILO
+# ESTILOS
 # ============================================================
 
 st.markdown(
@@ -59,12 +59,6 @@ st.markdown(
         font-size: 22px !important;
         margin-top: 18px !important;
         margin-bottom: 8px !important;
-    }
-
-    h3 {
-        font-size: 17px !important;
-        margin-top: 8px !important;
-        margin-bottom: 5px !important;
     }
 
     .seccion {
@@ -153,7 +147,6 @@ if "efectos" not in st.session_state:
 # ============================================================
 
 def buscar_programa(nombre):
-
     return shutil.which(nombre)
 
 
@@ -235,7 +228,6 @@ def convertir_tiempo(valor):
             )
 
     except Exception:
-
         return 0
 
     return 0
@@ -243,9 +235,7 @@ def convertir_tiempo(valor):
 
 def obtener_duracion(archivo):
 
-    ffprobe = buscar_programa(
-        "ffprobe"
-    )
+    ffprobe = buscar_programa("ffprobe")
 
     if not ffprobe:
         return 0
@@ -273,12 +263,11 @@ def obtener_duracion(archivo):
         )
 
     except Exception:
-
         return 0
 
 
 # ============================================================
-# GENERAR VOZ
+# GENERACIÓN DE VOZ
 # ============================================================
 
 def generar_voz(
@@ -288,13 +277,8 @@ def generar_voz(
     reverb
 ):
 
-    edge_tts = buscar_programa(
-        "edge-tts"
-    )
-
-    ffmpeg = buscar_programa(
-        "ffmpeg"
-    )
+    edge_tts = buscar_programa("edge-tts")
+    ffmpeg = buscar_programa("ffmpeg")
 
     if not edge_tts:
         return None, "No se encontró edge-tts."
@@ -323,6 +307,10 @@ def generar_voz(
 
     try:
 
+        # ====================================================
+        # VELOCIDAD
+        # ====================================================
+
         porcentaje = int(
             (velocidad - 1.0) * 100
         )
@@ -332,11 +320,13 @@ def generar_voz(
         else:
             rate = f"{porcentaje}%"
 
-        hz = int(
-            (1.0 - profundidad) * 100
-        )
-
-        pitch = f"-{hz}Hz"
+        # ====================================================
+        # EDGE TTS
+        #
+        # IMPORTANTE:
+        # NO usamos --pitch.
+        # El tono se modifica posteriormente con FFmpeg.
+        # ====================================================
 
         comando_tts = [
             edge_tts,
@@ -346,8 +336,6 @@ def generar_voz(
             rate,
             "--volume",
             "+0%",
-            "--pitch",
-            pitch,
             "--text",
             texto,
             "--write-media",
@@ -385,67 +373,153 @@ def generar_voz(
                 "Edge TTS no generó un audio válido."
             )
 
-        if reverb <= 0:
+        # ====================================================
+        # PROFUNDIDAD DE VOZ
+        # ====================================================
+        #
+        # 1.00 = voz original
+        # 0.95 = ligeramente grave
+        # 0.90 = grave
+        # 0.85 = bastante grave
+        # 0.80 = muy grave
+        # 0.75 = extremadamente grave
+        # 0.70 = máximo
+        #
+        # El cambio se hace mediante asetrate.
+        #
+        # NO utilizamos atempo aquí porque el procesamiento
+        # posterior conserva la duración mediante resampling.
+        #
+        # La velocidad de Edge TTS sigue siendo independiente.
+        # ====================================================
 
-            filtro_reverb = ""
+        factor_pitch = max(
+            0.70,
+            min(
+                1.00,
+                float(profundidad)
+            )
+        )
 
-        else:
+        filtros = []
 
-            cantidad = reverb / 100.0
+        # ----------------------------------------------------
+        # TONO
+        # ----------------------------------------------------
+
+        filtros.append(
+            f"asetrate="
+            f"44100*{factor_pitch:.4f},"
+            f"aresample=44100"
+        )
+
+        # ----------------------------------------------------
+        # COMPRESOR
+        # ----------------------------------------------------
+
+        filtros.append(
+            "acompressor="
+            "threshold=-18dB:"
+            "ratio=2.5:"
+            "attack=15:"
+            "release=120"
+        )
+
+        # ----------------------------------------------------
+        # EQ
+        # ----------------------------------------------------
+
+        filtros.append(
+            "equalizer="
+            "f=120:"
+            "t=q:"
+            "w=1.0:"
+            "g=2"
+        )
+
+        filtros.append(
+            "equalizer="
+            "f=3000:"
+            "t=q:"
+            "w=1.2:"
+            "g=1"
+        )
+
+        # ----------------------------------------------------
+        # REVERB
+        # ----------------------------------------------------
+
+        if reverb > 0:
+
+            cantidad = (
+                float(reverb) / 100.0
+            )
 
             delay1 = int(
-                55 + cantidad * 35
+                45 + cantidad * 35
             )
 
             delay2 = int(
-                110 + cantidad * 50
+                90 + cantidad * 50
             )
 
             delay3 = int(
-                180 + cantidad * 70
+                150 + cantidad * 70
             )
 
-            echo1 = 0.15 * cantidad
-            echo2 = 0.10 * cantidad
-            echo3 = 0.06 * cantidad
+            echo1 = 0.10 * cantidad
+            echo2 = 0.07 * cantidad
+            echo3 = 0.04 * cantidad
 
-            filtro_reverb = (
-                f",aecho="
-                f"0.80:0.70:"
-                f"{delay1}|{delay2}|{delay3}:"
+            filtros.append(
+                f"aecho="
+                f"0.85:0.65:"
+                f"{delay1}|"
+                f"{delay2}|"
+                f"{delay3}:"
                 f"{echo1:.3f}|"
                 f"{echo2:.3f}|"
                 f"{echo3:.3f}"
             )
 
-        filtro = (
-            "highpass=f=70,"
-            "lowpass=f=10000"
-            + filtro_reverb
-            + ","
-            "acompressor="
-            "threshold=-18dB:"
-            "ratio=2.5:"
-            "attack=20:"
-            "release=120,"
-            "alimiter=limit=0.90"
+        # ----------------------------------------------------
+        # LIMITADOR
+        # ----------------------------------------------------
+
+        filtros.append(
+            "alimiter="
+            "limit=0.90"
         )
+
+        filtro_final = ",".join(
+            filtros
+        )
+
+        # ====================================================
+        # PROCESAR VOZ
+        # ====================================================
 
         comando_ffmpeg = [
             ffmpeg,
             "-y",
             "-loglevel",
             "error",
+
             "-i",
             original,
+
             "-af",
-            filtro,
+            filtro_final,
+
             "-ar",
             "44100",
+
             "-ac",
             "1",
+
             "-c:a",
             "pcm_s16le",
+
             procesada
         ]
 
@@ -521,9 +595,7 @@ def mezclar_audio(
     efectos
 ):
 
-    ffmpeg = buscar_programa(
-        "ffmpeg"
-    )
+    ffmpeg = buscar_programa("ffmpeg")
 
     if not ffmpeg:
 
@@ -539,9 +611,9 @@ def mezclar_audio(
 
     try:
 
-        # ----------------------------------------------------
+        # ====================================================
         # VOZ
-        # ----------------------------------------------------
+        # ====================================================
 
         voz_path = os.path.join(
             carpeta,
@@ -585,9 +657,9 @@ def mezclar_audio(
 
         siguiente = 1
 
-        # ----------------------------------------------------
+        # ====================================================
         # AMBIENTE
-        # ----------------------------------------------------
+        # ====================================================
 
         ambiente_activo = False
 
@@ -623,7 +695,6 @@ def mezclar_audio(
                 ]
             )
 
-            # El slider controla REALMENTE el volumen
             filtros.append(
                 f"[{siguiente}:a]"
                 f"volume={volumen_ambiente:.3f},"
@@ -636,9 +707,9 @@ def mezclar_audio(
 
             ambiente_activo = True
 
-        # ----------------------------------------------------
+        # ====================================================
         # EFECTOS
-        # ----------------------------------------------------
+        # ====================================================
 
         etiquetas_efectos = []
 
@@ -693,20 +764,26 @@ def mezclar_audio(
 
             siguiente += 1
 
-        # ----------------------------------------------------
-        # MEZCLA FINAL
-        # ----------------------------------------------------
+        # ====================================================
+        # MEZCLA
+        # ====================================================
 
-        entradas = ["[voz]"]
+        entradas = [
+            "[voz]"
+        ]
 
         if ambiente_activo:
-            entradas.append("[ambiente]")
+            entradas.append(
+                "[ambiente]"
+            )
 
         entradas.extend(
             etiquetas_efectos
         )
 
-        cantidad = len(entradas)
+        cantidad = len(
+            entradas
+        )
 
         filtros.append(
             "".join(entradas)
@@ -722,9 +799,9 @@ def mezclar_audio(
             filtros
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # WAV
-        # ----------------------------------------------------
+        # ====================================================
 
         wav_final = os.path.join(
             carpeta,
@@ -738,7 +815,9 @@ def mezclar_audio(
             "error"
         ]
 
-        comando_wav.extend(inputs)
+        comando_wav.extend(
+            inputs
+        )
 
         comando_wav.extend(
             [
@@ -776,9 +855,9 @@ def mezclar_audio(
                 )
             )
 
-        # ----------------------------------------------------
+        # ====================================================
         # MP3
-        # ----------------------------------------------------
+        # ====================================================
 
         mp3_final = os.path.join(
             carpeta,
@@ -977,7 +1056,7 @@ with col3:
         step=1
     )
 
-hz_actual = int(
+nivel_voz = int(
     (1.0 - profundidad) * 100
 )
 
@@ -986,7 +1065,7 @@ st.markdown(
     <div class="info">
         Velocidad: {velocidad:.2f}x
         &nbsp;&nbsp;|&nbsp;&nbsp;
-        Tono: -{hz_actual} Hz
+        Gravedad: {nivel_voz}%
         &nbsp;&nbsp;|&nbsp;&nbsp;
         Reverb: {reverb}%
     </div>
@@ -1019,7 +1098,7 @@ ambiente = st.file_uploader(
 
 
 # ============================================================
-# VOLUMEN DEL AMBIENTE
+# VOLUMEN AMBIENTE
 # ============================================================
 
 volumen_ambiente = st.slider(
@@ -1039,17 +1118,15 @@ st.markdown(
     <div class="info">
         Volumen ambiente: {volumen_ambiente}%
         &nbsp;&nbsp;•&nbsp;&nbsp;
-        🔁 Loop automático
+        🔁 Loop automático hasta terminar la narración
     </div>
     """,
     unsafe_allow_html=True
 )
 
-# Convertimos el porcentaje a valor FFmpeg
 volumen_ambiente_ffmpeg = (
     volumen_ambiente / 100.0
 )
-
 
 if ambiente:
 
@@ -1244,9 +1321,9 @@ if generar:
                     }
                 )
 
-        # ----------------------------------------------------
-        # VOZ
-        # ----------------------------------------------------
+        # ====================================================
+        # GENERAR VOZ
+        # ====================================================
 
         with st.spinner(
             "🎙️ Generando voz..."
@@ -1265,19 +1342,20 @@ if generar:
 
         else:
 
-            # ------------------------------------------------
-            # MEZCLA
-            # ------------------------------------------------
+            # =================================================
+            # MEZCLAR
+            # =================================================
 
             with st.spinner(
-                "🎚️ Mezclando narración..."
+                "🎚️ Mezclando narración, ambiente y efectos..."
             ):
 
                 wav, mp3, error = mezclar_audio(
                     voz_bytes=voz,
                     ambiente=ambiente,
-                    volumen_ambiente=
-                        volumen_ambiente_ffmpeg,
+                    volumen_ambiente=(
+                        volumen_ambiente_ffmpeg
+                    ),
                     efectos=efectos_validos
                 )
 
