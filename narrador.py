@@ -65,14 +65,6 @@ st.markdown(
         margin-bottom: 12px;
     }
 
-    .panel {
-        background: rgba(14, 12, 21, 0.90);
-        border: 1px solid #30263d;
-        border-radius: 16px;
-        padding: 22px;
-        margin-bottom: 20px;
-    }
-
     .info {
         color: #8c8b99;
         font-size: 12px;
@@ -94,7 +86,7 @@ st.markdown(
 
 
 # ============================================================
-# FUNCIONES BÁSICAS
+# UTILIDADES
 # ============================================================
 
 def buscar_programa(nombre):
@@ -103,16 +95,12 @@ def buscar_programa(nombre):
 
 def limpiar_texto(texto):
     """
-    Limpia el texto antes de enviarlo a Edge TTS.
-
-    No elimina acentos ni palabras.
-    Evita que símbolos innecesarios afecten
-    la narración.
+    Limpia elementos que no queremos que sean pronunciados.
     """
 
     texto = texto.strip()
 
-    # URLs
+    # Eliminar URLs
     texto = re.sub(
         r"https?://\S+",
         "",
@@ -120,10 +108,7 @@ def limpiar_texto(texto):
         flags=re.IGNORECASE
     )
 
-    # Etiquetas tipo:
-    # [RISAS]
-    # [GRITO]
-    # [EFECTO]
+    # Eliminar etiquetas entre corchetes
     texto = re.sub(
         r"\[[^\]]*\]",
         "",
@@ -148,7 +133,7 @@ def limpiar_texto(texto):
         texto
     )
 
-    # Demasiados saltos
+    # Saltos excesivos
     texto = re.sub(
         r"\n{3,}",
         "\n\n",
@@ -161,12 +146,11 @@ def limpiar_texto(texto):
 def convertir_tiempo(valor):
     """
     Convierte:
-
     1:54
     01:54
     00:01:54
 
-    a segundos.
+    en segundos.
     """
 
     try:
@@ -204,19 +188,17 @@ def convertir_tiempo(valor):
             )
 
     except Exception:
-        pass
+        return 0
 
     return 0
 
 
 def obtener_duracion(archivo):
     """
-    Obtiene la duración del audio con ffprobe.
+    Obtiene duración mediante ffprobe.
     """
 
-    ffprobe = buscar_programa(
-        "ffprobe"
-    )
+    ffprobe = buscar_programa("ffprobe")
 
     if not ffprobe:
         return 0
@@ -249,7 +231,7 @@ def obtener_duracion(archivo):
 
 # ============================================================
 # GENERACIÓN DE VOZ
-# BASADA EN HASTAAQUI LLEGASTE
+# BASADA EN EL PROYECTO HASTAAQUI LLEGASTE
 # ============================================================
 
 def generar_voz(
@@ -258,16 +240,6 @@ def generar_voz(
     profundidad,
     reverb
 ):
-    """
-    Genera la voz utilizando:
-
-        Edge TTS
-        es-MX-JorgeNeural
-        FFmpeg
-
-    La técnica de profundidad conserva la duración
-    mediante atempo.
-    """
 
     edge_tts = buscar_programa(
         "edge-tts"
@@ -281,21 +253,17 @@ def generar_voz(
 
         return (
             None,
-            "No se encontró edge-tts. "
-            "Verifica requirements.txt."
+            "No se encontró edge-tts."
         )
 
     if not ffmpeg:
 
         return (
             None,
-            "No se encontró FFmpeg. "
-            "Verifica packages.txt."
+            "No se encontró FFmpeg."
         )
 
-    texto = limpiar_texto(
-        texto
-    )
+    texto = limpiar_texto(texto)
 
     if not texto:
 
@@ -329,15 +297,15 @@ def generar_voz(
         )
 
         if porcentaje >= 0:
-
             rate = f"+{porcentaje}%"
-
         else:
-
             rate = f"{porcentaje}%"
 
         # ====================================================
         # EDGE TTS
+        #
+        # IMPORTANTE:
+        # Edge TTS exige +0Hz y NO 0Hz.
         # ====================================================
 
         comando_tts = [
@@ -350,10 +318,10 @@ def generar_voz(
             rate,
 
             "--volume",
-            "-3%",
+            "+0%",
 
             "--pitch",
-            "0Hz",
+            "+0Hz",
 
             "--text",
             texto,
@@ -380,8 +348,9 @@ def generar_voz(
 
             return (
                 None,
-                "Edge TTS no pudo generar la voz:\n\n"
-                + detalle[:2000]
+                "Edge TTS no pudo generar "
+                "la voz:\n\n"
+                + detalle[:3000]
             )
 
         if (
@@ -391,30 +360,20 @@ def generar_voz(
 
             return (
                 None,
-                "Edge TTS terminó pero no generó "
-                "un MP3 válido."
+                "Edge TTS terminó pero "
+                "no generó un audio válido."
             )
 
         # ====================================================
         # PROFUNDIDAD
-        # ====================================================
         #
         # 1.00 = normal
         # 0.95 = ligeramente grave
         # 0.90 = grave
         # 0.82 = muy grave
-        # 0.75 = extremadamente grave
+        # 0.70 = extremadamente grave
         #
-        # Esto está basado en el procesamiento original
-        # de HastaAquíLlegaste:
-        #
-        # asetrate
-        # aresample
-        # atempo
-        #
-        # De esta forma el cambio de tono no cambia
-        # la duración de la narración.
-        #
+        # atempo compensa la duración.
         # ====================================================
 
         factor = profundidad
@@ -513,7 +472,8 @@ def generar_voz(
 
             return (
                 None,
-                "FFmpeg no pudo procesar la voz:\n\n"
+                "FFmpeg no pudo procesar "
+                "la voz:\n\n"
                 + (
                     resultado.stderr
                     or "Sin información."
@@ -527,7 +487,7 @@ def generar_voz(
 
             return (
                 None,
-                "FFmpeg terminó pero no generó "
+                "FFmpeg no generó "
                 "un WAV válido."
             )
 
@@ -547,7 +507,8 @@ def generar_voz(
 
         return (
             None,
-            "La generación de voz tardó demasiado."
+            "La generación de voz "
+            "tardó demasiado."
         )
 
     except Exception as error:
@@ -566,7 +527,7 @@ def generar_voz(
 
 
 # ============================================================
-# MEZCLAR NARRACIÓN + AMBIENTE + EFECTOS
+# MEZCLA DE NARRACIÓN + AMBIENTE + EFECTOS
 # ============================================================
 
 def mezclar_audio(
@@ -574,17 +535,6 @@ def mezclar_audio(
     ambiente,
     efectos
 ):
-    """
-    Mezcla:
-
-        Narración
-        +
-        Ambiente
-        +
-        múltiples efectos
-
-    Cada efecto tiene su propio tiempo.
-    """
 
     ffmpeg = buscar_programa(
         "ffmpeg"
@@ -605,7 +555,7 @@ def mezclar_audio(
     try:
 
         # ====================================================
-        # GUARDAR VOZ
+        # VOZ
         # ====================================================
 
         voz_path = os.path.join(
@@ -635,10 +585,6 @@ def mezclar_audio(
                 "la duración de la narración."
             )
 
-        # ====================================================
-        # INPUTS
-        # ====================================================
-
         inputs = [
             "-i",
             voz_path
@@ -646,7 +592,7 @@ def mezclar_audio(
 
         filtros = []
 
-        # Voz principal
+        # Voz
         filtros.append(
             "[0:a]volume=1.0[voz]"
         )
@@ -659,13 +605,16 @@ def mezclar_audio(
 
         if ambiente is not None:
 
-            ambiente_ext = Path(
-                ambiente.name
-            ).suffix or ".mp3"
+            extension = (
+                Path(
+                    ambiente.name
+                ).suffix
+                or ".mp3"
+            )
 
             ambiente_path = os.path.join(
                 carpeta,
-                "ambiente" + ambiente_ext
+                "ambiente" + extension
             )
 
             with open(
@@ -686,8 +635,6 @@ def mezclar_audio(
                 ]
             )
 
-            # Volumen deliberadamente bajo
-            # para que no tape la voz.
             filtros.append(
                 f"[{siguiente}:a]"
                 f"volume=0.18,"
@@ -715,9 +662,7 @@ def mezclar_audio(
         ):
 
             archivo = efecto["archivo"]
-
             tiempo = efecto["tiempo"]
-
             volumen = efecto["volumen"]
 
             extension = (
@@ -752,8 +697,6 @@ def mezclar_audio(
                 f"fx{numero}"
             )
 
-            # adelay coloca el efecto exactamente
-            # en el segundo indicado.
             filtros.append(
                 f"[{siguiente}:a]"
                 f"adelay="
@@ -770,31 +713,29 @@ def mezclar_audio(
             siguiente += 1
 
         # ====================================================
-        # CREAR LISTA DE MEZCLA
+        # MEZCLA
         # ====================================================
 
-        entradas_mezcla = [
+        entradas = [
             "[voz]"
         ]
 
         if ambiente_activo:
 
-            entradas_mezcla.append(
+            entradas.append(
                 "[ambiente]"
             )
 
-        entradas_mezcla.extend(
+        entradas.extend(
             etiquetas_efectos
         )
 
         cantidad = len(
-            entradas_mezcla
+            entradas
         )
 
         filtros.append(
-            "".join(
-                entradas_mezcla
-            )
+            "".join(entradas)
             + f"amix=inputs={cantidad}:"
             "duration=first:"
             "dropout_transition=0,"
@@ -807,7 +748,7 @@ def mezclar_audio(
         )
 
         # ====================================================
-        # WAV FINAL
+        # WAV
         # ====================================================
 
         wav_final = os.path.join(
@@ -865,7 +806,7 @@ def mezclar_audio(
             )
 
         # ====================================================
-        # MP3 FINAL
+        # MP3
         # ====================================================
 
         mp3_final = os.path.join(
@@ -875,7 +816,9 @@ def mezclar_audio(
 
         comando_mp3 = [
             ffmpeg,
+
             "-y",
+
             "-loglevel",
             "error",
 
@@ -907,10 +850,6 @@ def mezclar_audio(
                 "Error creando MP3:\n\n"
                 + resultado.stderr
             )
-
-        # ====================================================
-        # LEER RESULTADOS
-        # ====================================================
 
         with open(
             wav_final,
@@ -966,9 +905,7 @@ if "error" not in st.session_state:
 # ENCABEZADO
 # ============================================================
 
-st.markdown(
-    "# 🎙️ NARRADOR"
-)
+st.markdown("# 🎙️ NARRADOR")
 
 st.markdown(
     """
@@ -1015,13 +952,11 @@ st.markdown(
 )
 
 st.info(
-    "Motor de voz: Edge TTS • "
-    "Voz: es-MX-JorgeNeural"
+    "Motor: Edge TTS • Voz masculina: "
+    "es-MX-JorgeNeural"
 )
 
-
 col1, col2 = st.columns(2)
-
 
 with col1:
 
@@ -1038,21 +973,20 @@ with col1:
         )
     )
 
-
 with col2:
 
     profundidad = st.slider(
-        "🐺 Profundidad / voz gruesa",
+        "🐺 Voz gruesa",
         min_value=0.70,
         max_value=1.00,
         value=0.82,
         step=0.01,
         help=(
-            "1.00 = normal. "
-            "0.70 = extremadamente grave."
+            "1.00 = normal | "
+            "0.82 = grave | "
+            "0.70 = muy grave"
         )
     )
-
 
 reverb = st.slider(
     "🌫️ Reverberación",
@@ -1068,7 +1002,7 @@ st.markdown(
     <div class="info">
     Velocidad: {velocidad:.2f}x<br>
     Profundidad: {profundidad:.2f}<br>
-    Reverberación: {reverb}%
+    Reverb: {reverb}%
     </div>
     """,
     unsafe_allow_html=True
@@ -1113,11 +1047,9 @@ st.markdown(
 )
 
 st.info(
-    "Puedes colocar hasta 10 efectos. "
-    "Ejemplo: risas en 01:54, un grito en 02:17 "
-    "y una puerta en 02:43."
+    "Puedes colocar hasta 10 efectos "
+    "en diferentes momentos de la narración."
 )
-
 
 cantidad_efectos = st.number_input(
     "Cantidad de efectos",
@@ -1127,9 +1059,7 @@ cantidad_efectos = st.number_input(
     step=1
 )
 
-
 efectos = []
-
 
 for i in range(
     int(cantidad_efectos)
@@ -1191,11 +1121,10 @@ for i in range(
 
 
 # ============================================================
-# GENERAR
+# BOTÓN
 # ============================================================
 
 st.markdown("---")
-
 
 generar = st.button(
     "🎙️ GENERAR NARRACIÓN",
@@ -1205,7 +1134,7 @@ generar = st.button(
 
 
 # ============================================================
-# PROCESAMIENTO
+# GENERAR
 # ============================================================
 
 if generar:
@@ -1217,14 +1146,10 @@ if generar:
     if not texto.strip():
 
         st.error(
-            "Escribe primero el texto de la narración."
+            "Escribe primero el texto."
         )
 
     else:
-
-        # ----------------------------------------------------
-        # GENERAR VOZ
-        # ----------------------------------------------------
 
         with st.spinner(
             "🎙️ Generando voz..."
@@ -1243,12 +1168,8 @@ if generar:
 
         else:
 
-            # ------------------------------------------------
-            # MEZCLAR
-            # ------------------------------------------------
-
             with st.spinner(
-                "🎚️ Mezclando ambiente y efectos..."
+                "🎚️ Mezclando narración..."
             ):
 
                 wav, mp3, error = mezclar_audio(
@@ -1268,7 +1189,7 @@ if generar:
 
 
 # ============================================================
-# MOSTRAR ERROR
+# ERROR
 # ============================================================
 
 if st.session_state.error:
@@ -1290,7 +1211,6 @@ if st.session_state.resultado_mp3:
         "## 🎧 NARRACIÓN FINAL"
     )
 
-    # Reproductor
     st.audio(
         st.session_state.resultado_mp3,
         format="audio/mpeg"
